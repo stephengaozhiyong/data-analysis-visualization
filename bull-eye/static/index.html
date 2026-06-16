@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+  <meta charset="UTF-8">
+  <title>金融分析 - 卡片式多图</title>
+
+  <!-- axios -->
+  <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+
+  <!-- plotly -->
+  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      background: #f7f8fa;
+      color: #222;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+      padding: 16px;
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      margin-bottom: 20px;
+    }
+
+    .toolbar label {
+      font-size: 14px;
+      color: #444;
+    }
+
+    .toolbar select,
+    .toolbar button {
+      padding: 6px 10px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      background: #fff;
+      font-size: 14px;
+    }
+
+    .toolbar button {
+      cursor: pointer;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 16px;
+    }
+
+    .card {
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 14px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.04);
+      overflow: hidden;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px 12px;
+      padding: 12px 14px;
+      border-bottom: 1px solid #eef2f7;
+      background: #fafafa;
+    }
+
+    .field-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .field-group label {
+      font-size: 13px;
+      color: #555;
+      white-space: nowrap;
+    }
+
+    .field-group select {
+      min-width: 150px;
+      padding: 6px 10px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      background: #fff;
+    }
+
+    .card-body {
+      position: relative;
+      height: 360px;
+      padding: 8px;
+    }
+
+    .chart-box {
+      width: 100%;
+      height: 100%;
+    }
+
+    .loading,
+    .empty,
+    .error {
+      position: absolute;
+      inset: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 10px;
+      font-size: 15px;
+    }
+
+    .loading {
+      background: rgba(255, 255, 255, 0.78);
+      color: #666;
+      z-index: 10;
+    }
+
+    .empty {
+      background: #f9fafb;
+      color: #9ca3af;
+      border: 1px dashed #d1d5db;
+    }
+
+    .error {
+      background: #fff1f2;
+      color: #be123c;
+      border: 1px dashed #fda4af;
+    }
+
+    .hint {
+      margin-top: 10px;
+      color: #6b7280;
+      font-size: 13px;
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- 顶部只保留：股票 + 添加图卡 -->
+  <div class="toolbar">
+    <label>股票：</label>
+    <select id="symbol"></select>
+
+    <button id="addCardBtn">添加图卡</button>
+  </div>
+
+  <!-- 图卡容器 -->
+  <div id="cards" class="cards"></div>
+
+  <div class="hint">
+    说明：股票是全局条件；每张图卡内部独立选择“报表”和“财务指标”，切换后自动刷新图表。
+  </div>
+
+  <script>
+    let statementOptions = [];
+    let cardIdSeed = 0;
+
+    document.addEventListener("DOMContentLoaded", async () => {
+      bindGlobalEvents();
+
+      await loadSymbols();
+      await loadStatements();
+
+      // 默认创建一张图卡
+      addChartCard();
+    });
+
+    function bindGlobalEvents() {
+      const symbolSelect = document.getElementById("symbol");
+      const addCardBtn = document.getElementById("addCardBtn");
+
+      symbolSelect.addEventListener("change", async () => {
+        await refreshAllCards();
+      });
+
+      addCardBtn.addEventListener("click", () => {
+        addChartCard();
+      });
+    }
+
+    // -----------------------------
+    // 加载全局数据
+    // -----------------------------
+    async function loadSymbols() {
+      const res = await axios.get("http://127.0.0.1:8000/api/symbols");
+      const select = document.getElementById("symbol");
+      select.innerHTML = "";
+
+      res.data.forEach(item => {
+        const option = document.createElement("option");
+        option.value = item.value;
+        option.text = item.label;
+        select.appendChild(option);
+      });
+    }
+
+    async function loadStatements() {
+      const res = await axios.get("http://127.0.0.1:8000/api/statements");
+      statementOptions = Array.isArray(res.data) ? res.data : [];
+    }
+
+    async function getIndicators(statement) {
+      const form = {
+        symbol: document.getElementById("symbol").value,
+        statement: statement
+      };
+
+      const res = await axios.post("http://127.0.0.1:8000/api/indicators", form);
+      return Array.isArray(res.data) ? res.data : [];
+    }
+
+    // -----------------------------
+    // 图卡管理
+    // -----------------------------
+    function addChartCard(defaultStatement = null, defaultIndicator = null) {
+      const cards = document.getElementById("cards");
+
+      const cardId = `card_${++cardIdSeed}`;
+      const chartId = `chart_${cardIdSeed}`;
+      const statementId = `statement_${cardIdSeed}`;
+      const indicatorId = `indicator_${cardIdSeed}`;
+      const loadingId = `loading_${cardIdSeed}`;
+      const stateId = `state_${cardIdSeed}`;
+
+      const card = document.createElement("div");
+      card.className = "card";
+      card.dataset.cardId = cardId;
+      card.innerHTML = `
+        <div class="card-header">
+          <div class="field-group">
+            <label>报表：</label>
+            <select id="${statementId}"></select>
+          </div>
+
+          <div class="field-group">
+            <label>财务指标：</label>
+            <select id="${indicatorId}"></select>
+          </div>
+        </div>
+
+        <div class="card-body">
+          <div id="${chartId}" class="chart-box"></div>
+          <div id="${loadingId}" class="loading" style="display:none;">加载中...</div>
+          <div id="${stateId}" class="empty">请选择报表和指标</div>
+        </div>
+      `;
+
+      cards.appendChild(card);
+
+      const statementSelect = card.querySelector(`#${statementId}`);
+      const indicatorSelect = card.querySelector(`#${indicatorId}`);
+
+      fillStatementSelect(statementSelect, defaultStatement);
+
+      // 报表变更 -> 重新加载指标 -> 自动绘图
+      statementSelect.addEventListener("change", async () => {
+        await syncCardIndicators(card, null);
+        await renderCardChart(card);
+      });
+
+      // 指标变更 -> 自动绘图
+      indicatorSelect.addEventListener("change", async () => {
+        await renderCardChart(card);
+      });
+
+      // 初始加载该图卡指标并渲染
+      syncCardIndicators(card, defaultIndicator).then(() => {
+        renderCardChart(card);
+      });
+    }
+
+    function fillStatementSelect(selectEl, selectedValue = null) {
+      selectEl.innerHTML = "";
+
+      statementOptions.forEach((item, index) => {
+        const option = document.createElement("option");
+        option.value = item.value;
+        option.text = item.label;
+
+        if (selectedValue) {
+          option.selected = item.value === selectedValue;
+        } else if (index === 0) {
+          option.selected = true;
+        }
+
+        selectEl.appendChild(option);
+      });
+    }
+
+    async function syncCardIndicators(card, selectedIndicator = null) {
+      const statementSelect = card.querySelectorAll("select")[0];
+      const indicatorSelect = card.querySelectorAll("select")[1];
+
+      const indicators = await getIndicators(statementSelect.value);
+
+      indicatorSelect.innerHTML = "";
+
+      if (!indicators.length) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "暂无指标";
+        indicatorSelect.appendChild(opt);
+        indicatorSelect.disabled = true;
+        return;
+      }
+
+      indicatorSelect.disabled = false;
+
+      indicators.forEach((item, index) => {
+        const opt = document.createElement("option");
+        opt.value = item.value;
+        opt.textContent = item.label;
+
+        if (selectedIndicator) {
+          opt.selected = item.value === selectedIndicator;
+        } else if (index === 0) {
+          opt.selected = true;
+        }
+
+        indicatorSelect.appendChild(opt);
+      });
+    }
+
+    async function refreshAllCards() {
+      const cards = document.querySelectorAll(".card");
+      for (const card of cards) {
+        await syncCardIndicators(card, card.querySelectorAll("select")[1].value);
+        await renderCardChart(card);
+      }
+    }
+
+    // -----------------------------
+    // 图表渲染
+    // -----------------------------
+    async function renderCardChart(card) {
+      const selects = card.querySelectorAll("select");
+      const statementSelect = selects[0];
+      const indicatorSelect = selects[1];
+
+      const chartEl = card.querySelector(".chart-box");
+      const loadingEl = card.querySelector(".loading");
+      const stateEl = card.querySelector("#" + card.querySelector("[id^='state_']").id);
+
+      const symbol = document.getElementById("symbol").value;
+      const statement = statementSelect.value;
+      const indicator = indicatorSelect.value;
+
+      if (!statement || !indicator) {
+        Plotly.purge(chartEl);
+        chartEl.innerHTML = "";
+        stateEl.className = "empty";
+        stateEl.innerText = "请选择报表和指标";
+        stateEl.style.display = "flex";
+        return;
+      }
+
+      loadingEl.style.display = "flex";
+      stateEl.style.display = "none";
+
+      try {
+        const form = {
+          symbol,
+          statement,
+          indicator
+        };
+
+        const res = await axios.post("http://127.0.0.1:8000/api/chart", form);
+        const data = res.data;
+
+        if (!data || !Array.isArray(data.x) || data.x.length === 0) {
+          Plotly.purge(chartEl);
+          chartEl.innerHTML = "";
+          stateEl.className = "empty";
+          stateEl.innerText = "暂无数据";
+          stateEl.style.display = "flex";
+          return;
+        }
+
+        renderChart(chartEl.id, data, indicatorSelect.options[indicatorSelect.selectedIndex].text);
+
+      } catch (err) {
+        console.error("图表加载失败:", err);
+        Plotly.purge(chartEl);
+        chartEl.innerHTML = "";
+        stateEl.className = "error";
+        stateEl.innerText = "加载失败";
+        stateEl.style.display = "flex";
+      } finally {
+        loadingEl.style.display = "none";
+      }
+    }
+
+    function renderChart(targetId, data, titleText = "") {
+      const barTrace = {
+        x: data.x,
+        y: data.y1,
+        name: "数值",
+        type: "bar",
+        yaxis: "y1",
+        marker: {
+          color: "#4f46e5"
+        }
+      };
+
+      const lineTrace = {
+        x: data.x,
+        y: data.y2,
+        name: "同比",
+        type: "scatter",
+        mode: "lines+markers",
+        yaxis: "y2",
+        line: {
+          color: "#ef4444",
+          width: 2
+        }
+      };
+
+      const layout = {
+        title: {
+          text: titleText,
+          font: { size: 16 }
+        },
+        margin: { t: 40, r: 50, l: 50, b: 50 },
+        yaxis: {
+          title: "数值"
+        },
+        yaxis2: {
+          title: "同比",
+          overlaying: "y",
+          side: "right"
+        },
+        legend: {
+          orientation: "h",
+          y: 1.12
+        }
+      };
+
+      Plotly.newPlot(targetId, [barTrace, lineTrace], layout, {
+        responsive: true,
+        displayModeBar: true
+      });
+    }
+  </script>
+
+</body>
+</html>
