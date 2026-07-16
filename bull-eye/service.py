@@ -64,4 +64,4 @@ def build_chart(data):
 
 
 if __name__ == '__main__':
-    df = get_finance_data("SH600519", "income")
+    df = json_to_dataframe("SH600519", "income")
